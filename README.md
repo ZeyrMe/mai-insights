@@ -1,100 +1,111 @@
+<div align="center">
+
 # 麦麦见闻 · `zeyr.mai-insights`
 
-> N + M 频道标签订阅路由、采集期零模型消耗攒料、滑动窗口整批提炼，以及严格物理隔离的“活人搬新鲜事”与“中立工具态总结”。
+**像群友一样后台逛网攒新料，攒够一波一次消化：顺手在摸鱼时搬一两条新鲜事进群聊，定时或 `/总结` 再拉一份干净总账**
 
-![Version](https://img.shields.io/badge/version-0.2.0-green)
-![MaiBot](https://img.shields.io/badge/MaiBot-1.4.8%2B-blue)
-![SDK](https://img.shields.io/badge/SDK-2.23.0-teal)
-![License](https://img.shields.io/badge/License-MIT-lightgrey)
+![Version](https://img.shields.io/badge/version-0.2.0-brightgreen)
+![MaiBot](https://img.shields.io/badge/MaiBot-1.4.8%2B-2f81f7)
+![SDK](https://img.shields.io/badge/SDK-2.23.0-0e8a16)
+![Standalone](https://img.shields.io/badge/独立运行-支持-blue)
 
-## 核心特性
+[为什么用它](#为什么用它) · [3 步快速开始](#3-步快速开始) · [配置项说明](#常用配置项说明) · [命令与控制台](#命令工具与控制台) · [FAQ](#常见疑问)
 
-- **N + M 标签订阅路由，终结 N×M 排列组合地狱**：
-  - **源侧（`feeds` + `observe_groups`）**：RSS / RSSHub 订阅源和观察群只管给自己贴主题 `tags`（如 `tech`、`acg`、`gossip`）；
-  - **去向侧（`targets`）**：每个群或显式私聊只管填写要 `subscribe` 的标签（`*` 全收）以及接收模式（`insight` / `digest` / `both`），新增源或新增群零耦合。
-- **采集期零 LLM，定时/手动整批消化（告别逐条烧 token）**：
-  - RSS 轮询（仅收当前逻辑日带发布时间的条目，支持多 RSSHub 镜像顺序降级）与观察群收消息（保留 `filter_humans` 过滤同行 Bot 噪音）**全程零大模型调用**，不逐条 `fsync`；
-  - 攒料到消化间隔后，先按上限用 `better-search` 补充精选正文，再按条数/字数安全分段（Map）与分层归并（Reduce），一次产出**主题总览** + **0～3 条真正新鲜有趣的见闻**（仅允许真实原料 ID，且消化失败保留游标、跨日不混入新见闻池）。
-- **活人分享 vs 工具总结严格隔离**：
-  - **活人分享（`insight`）**：仅当目标群（或显式登记的私聊）近期有真人聊过天、且通过 `mai-day` 的 `open` 自由窗口与四阶段租约审批时，用当下会话人设自然搬运 1 条并拿到实际发送回执才推进冷却；
-  - **工具总结（`digest`）**：`/总结` 与整点定时总结使用客观中立口吻生成，走服务授权发送且**绝不回写日常人设聊天历史**；`/总结 群内` 直接调用宿主 `ctx.message.get_by_time_in_chat` 拉取当天消息。
-- **观察群绝对禁言红线**：观察群只进不出，绝不向观察群主动分享、绝不在观察群内回应 `/总结`。
+</div>
 
 ---
 
-## 安装与快速配置
+## 为什么用它
 
-将 `mai-insights/` 放入宿主 `plugins/` 目录并重启 MaiBot（宿主会自动安装 `feedparser` 与 `httpx`）。开源默认无任何订阅源与推送目标，开箱不会乱发消息。
+| 常见问题 | 传统做法的痛点 | **麦麦见闻（`zeyr.mai-insights`）** |
+|---|---|---|
+| RSS 和群一多配成死结 | 每个源和每个群手写一条定向映射，增减来源痛苦不堪 | **N + M 标签订阅**：源只贴主题标签，目标群只写要订阅哪些标签（`*` 全收） |
+| 每条消息/每条推送逐条总结 | 90% 的水话接龙也逐条调用模型，烧 token 还制造平庸摘要 | **采集期零模型消耗**：静默攒料后整批分段提炼（Map-Reduce），一次产出总览 + 0～3 条今日精华 |
+| 工具播报味和闲聊人设串味 | 群里像个新闻播音员“今日头条如下……” | **双轨严格隔离**：活人分享走人设改写与 `mai-day` 租约；`/总结` 和整点播报走客观工具态，不进日常聊天记忆 |
+| 观察群意外暴露或抢答 | 采集情报的群自己突然冒泡发消息 | **观察群物理级只采不发**，甚至本地在观察群触发 `/总结` 也死锁禁发 |
 
-`config.toml` 示例：
+---
+
+## 3 步快速开始
+
+### WebUI 上手（推荐）
+1. 将 `mai-insights/` 放入宿主 `plugins/` 并重启，打开 **麦麦见闻** 配置页（开源默认不带任何源和目标，不会乱发消息）。
+2. 在 **RSS 订阅源** 添加信息源或到 **观察群来源** 填上想潜水的 QQ 群号，各自贴个好记的主题标签（如 `tech`、`acg`）。
+3. 在 **订阅目标** 填上接收群号（私聊需显式写 `private:QQ号`）并填上订阅的标签与模式（`insight` / `digest` / `both`）；之后随时可在顶部控制台点 **立即采集全部来源** 和 **立即整批消化** 查看精选效果。
+
+<details>
+<summary>手改 config.toml 示例（附完整注释）</summary>
 
 ```toml
 enabled = true
-rsshub_base_urls = ["https://rsshub.example.com"]
+rsshub_base_urls = ["https://rsshub.example.com"]    # 用 rsshub_route 时按顺序降级尝试的镜像地址
 
 [[feeds]]
-id = "tech_daily"
+id = "tech_news"
 url = "https://example.com/tech/rss.xml"
-tags = ["tech"]
+tags = ["tech"]                                      # 源侧贴标签
 
 [[observe_groups]]
-group = "111222333"
+group = "111222333"                                  # 只潜水采集的观察群，死锁不外发
 tags = ["gossip"]
 
 [[targets]]
-chat = "999888777"
-subscribe = ["tech", "gossip"]
-mode = "both"            # insight | digest | both
+chat = "999888777"                                   # 目标群；私聊请显式写 private:QQ号
+subscribe = ["tech", "gossip"]                       # 写 ["*"] 订阅全部标签
+mode = "both"                                        # insight（闲时搬1条）| digest（定时总结）| both
 
 [[admins]]
 platform = "qq"
-user_id = "987654"
+user_id = "987654"                                   # 有权用 /总结 命令；留空可自动继承群关系管理员
 ```
 
+</details>
+
 ---
 
-## 工具、命令、接口与 WebUI 控制台
+## 常用配置项说明
 
-### 对话工具（`@Tool`）
-| 工具名 | 参数 | 作用 |
+| 配置项 | 默认值 | 怎么填与效果说明 |
 |---|---|---|
-| `query_today_insights` | `topic=""` | 立即查看今天后台已经提炼好的精选见闻池（只读本地池，不现场联网） |
+| `feeds` | `[]` | RSS/Atom/RSSHub 源；仅接收当前逻辑日带发布时间的条目，隔夜旧闻不进池 |
+| `observe_groups` | `[]` | 观察群列表；自动过滤 `mai-circle` 标好的同行 Bot 发言，入站不逐条落盘 |
+| `targets` | `[]` | 接收目标列表；私聊不填绝不主动推，支持 `exclude_sources` 屏蔽个别源 |
+| `digest_interval_minutes` | `180` | 高级设置：攒到新材料后，隔多少分钟醒着整批消化一次（默认 3 小时） |
+| `max_insights_per_digest` | `3` | 高级设置：单次整批消化最多挑出几条最值得聊的新鲜事进见闻池 |
+| `summary_hours` | `[]` | 高级设置：每天整点向 `mode` 为 `digest` 或 `both` 的目标发总结的小时（0–23） |
+| `max_enrich_per_digest` | `3` | 高级设置：消化前最多调用 `better-search` 为几条短摘要补全原文正文 |
 
-### 命令（需在 `admins` 或 `mai-circle.admins` 名单内）
-| 命令格式 | 效果 |
+---
+
+## 命令、工具与控制台
+
+### 群/私聊总结命令（需管理员权限，观察群内原地禁发）
+| 命令格式 | 作用 |
 |---|---|
-| `/总结` 或 `/总结 全部` | 输出今日整批见闻与资讯汇总 |
-| `/总结 全网` | 仅汇总今天来自 RSS / RSSHub 订阅源的内容 |
-| `/总结 群内` | 汇总当前群当天逻辑日窗口的真实聊天内容（观察群自身禁发） |
-| `/总结 群内 <群号>` | 在普通群或私聊内，按管理员权限远程查看指定群今日聊天总结 |
+| `/总结` 或 `/总结 全部` | 输出今日已汇总的全网 + 观察群总览与精选清单 |
+| `/总结 全网` | 仅汇总今天来自 RSS / RSSHub 订阅源的资讯 |
+| `/总结 群内` | 拉取当前群今天逻辑日内的真实消息记录做整批工具总结 |
+| `/总结 群内 <群号>` | 在普通群或私聊远程查看指定群的今日群内总结 |
 
-### 对外联动接口（`@API(..., version="1")`）
-- `get_today_insights(limit=3, topic="")` / `mark_shared(item_id, stream_id, receipt_id)`
-
-### WebUI 运行时控制台（`config_widgets`）
-| 控件 | 类型 | 说明 |
-|---|---|---|
-| `运行状态与生效范围` | 实时状态 | 展示各 RSS/观察群最近采集健康度、待消化原料条数、今日精选见闻及 `[scope]` 状态 |
-| `立即采集全部来源` | 一键按钮 | 手动触发一轮全部启用订阅源拉取 |
-| `立即整批消化` | 一键按钮 | 忽略定时间隔，立即对未消化原料跑一轮整批提炼 |
-| `清空今日分享冷却` | 二次确认按钮 | 重置今天各目标群/私聊的分享冷却计时 |
+### 工具与 WebUI 控制台
+- **工具 `query_today_insights(topic="")`**：Bot 自己翻看今日已整批提炼的见闻池（只读不临时联网）。
+- **WebUI 控制台**：`运行状态与生效范围`（源健康度、待消化数、今日精选预览）+ `立即采集全部来源` + `立即整批消化` + `清空今日分享冷却`。
 
 ---
 
-## 生态联动与注意事项
+## 生态联动与常见疑问
 
-- **与 `mai-day` 联动**：摸鱼 `open` 时段才放行搬运，采用 `reserve_share` → `maisaka.reply.generate` → `authorize_share` → 真实送达回执结算 `settle_share` 并回写 `mai-day` 动态事件；`/总结` 发送走 30 秒精确服务授权，不受睡眠静默误杀。缺席 `mai-day` 时按自身默认清醒时段与冷却独立工作。
-- **与 `better-search` & `mai-circle` 联动**：整批消化前优先调 `better-search.fetch` 补齐正文；观察群缓冲自动过滤 `mai-circle` 标记的同行 Bot 消息。
+- **联动关系**：装有 `mai-day` 时必须拿到 `open` 自由窗租约并确认实际送达才推进共享冷却、顺便写入一条动态事件；未装 `mai-day` 时使用内置 `fallback_open_start_hour`（9:00–23:00）独立工作。
+- **Q：如果群里水了一天几千条消息，整批消化会不会超出模型上下文？**
+  不会。插件会先按条数与字数阈值拆成多块分段提炼（Map），再层级归并（Reduce）；如果某轮生成报错会保留原游标，下次重试绝不漏掉未消化原料。
 
 <details>
-<summary>开发、门禁与安全审计（独立仓库维护）</summary>
+<summary>开发、门禁与安全审计</summary>
 
 ```bash
 python3.13 -m venv .venv
 .venv/bin/python -m pip install --require-hashes -r .github/requirements-ci.txt
 .venv/bin/python scripts/check.py
 ```
-
-- 包含 `feedparser` / `httpx` 依赖一致性检查、整批分段 Map-Reduce 回归测试与 CI 安全审计。
 
 </details>

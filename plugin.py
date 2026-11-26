@@ -62,9 +62,23 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
 
     def console_text(self):
         rows = self.today_items() if self.store else []
+        if self.health:
+            health_parts = [
+                f"{src}（{'正常' if info.get('ok') else '异常：' + str(info.get('error') or '拉取失败')}）"
+                if isinstance(info, dict)
+                else f"{src}（{info}）"
+                for src, info in self.health.items()
+            ]
+            health_line = "、".join(health_parts)
+        else:
+            health_line = "暂未开始拉取，或尚未填写任何订阅源"
+        prepared = [row["title"] for row in rows if row.get("prepared")]
+        pending = sum(not row.get("digested") for row in rows)
         return (
-            f"来源健康：{self.health}\n观察群：{len(self.config.observe_groups)}；订阅目标：{len(self.config.targets)}\n未消化：{sum(not row.get('digested') for row in rows)}；今日精选：{sum(bool(row.get('prepared')) for row in rows)}\n精选："
-            + "；".join(row["title"] for row in rows if row.get("prepared"))
+            f"订阅源健康：{health_line}\n"
+            f"路由配置：{len(self.config.feeds)} 个 RSS 源 · {len(self.config.observe_groups)} 个观察群 · {len(self.config.targets)} 个接收目标\n"
+            f"今日材料池：待整批消化 {pending} 条，已精选出 {len(prepared)} 条"
+            + (f"（{'；'.join(prepared)}）" if prepared else "")
         )
 
     async def on_load(self):
