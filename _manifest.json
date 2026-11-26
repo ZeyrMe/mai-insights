@@ -1,0 +1,33 @@
+{
+  "manifest_version": 2,
+  "id": "zeyr.mai-insights",
+  "version": "0.1.0",
+  "name": "麦麦见闻",
+  "description": "后台采集、整理见闻与定向分享",
+  "author": {
+    "name": "zeyr",
+    "url": "https://github.com/zeyr"
+  },
+  "license": "MIT",
+  "urls": {
+    "repository": "https://github.com/zeyr/mai-insights"
+  },
+  "host_application": {
+    "min_version": "1.4.8",
+    "max_version": "1.4.99"
+  },
+  "sdk": {
+    "min_version": "2.23.0",
+    "max_version": "2.23.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "api.get",
+    "api.call"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN"
+  },
+  "changelog": "CHANGELOG.md",
+  "plugin_type": "chat"
+}

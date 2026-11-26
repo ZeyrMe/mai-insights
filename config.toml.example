@@ -1,0 +1,5 @@
+# Generated from config_models.py; instance config.toml stays local.
+enabled = true
+
+[plugin]
+config_version = "0.1.0"
