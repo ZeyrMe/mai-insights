@@ -90,6 +90,7 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
         self.zone = ZoneInfo(self.config.timezone)
 
     async def loop(self):
+        await asyncio.sleep(3)
         while True:
             try:
                 if self.config.enabled:
