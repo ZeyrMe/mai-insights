@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "zeyr.mai-insights",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "name": "麦麦见闻",
   "description": "后台采集、整理见闻与定向分享",
   "author": {

@@ -187,5 +187,6 @@ async def test_share_records_delivery_without_sdk_success_field(plugin):
             send=SimpleNamespace(text=AsyncMock(return_value={"sent": True, "message_id": "receipt"})),
         )
     )
+    plugin.store.data["activity"] = {"qq:group:target": plugin.logical_now().isoformat()}
     assert await plugin.send_item({"id": "item", "insight": "材料"}, "s", "qq:target")
     assert plugin.store.data["shared"]["qq:target:item"] == "receipt"

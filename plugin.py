@@ -13,10 +13,11 @@ from zoneinfo import ZoneInfo
 import feedparser
 import httpx
 from maibot_sdk import API, Command, HookHandler, MaiBotPlugin, Tool
+from maibot_sdk.config_widgets import ConfigWidget, ConfigWidgetState
 from maibot_sdk.types import HookOrder
 
 from .config_models import Config
-from .ecosystem import EcosystemMixin
+from .ecosystem import EcosystemMixin, anchor
 from .runtime import StateFile, identity, render, result, send_receipt, send_succeeded, service_send
 
 
@@ -38,6 +39,16 @@ def initial_state():
 
 class Plugin(EcosystemMixin, MaiBotPlugin):
     config_model = Config
+    config_widgets = EcosystemMixin.config_widgets + [
+        ConfigWidget(id="collect_now", kind="action", label="立即采集全部来源"),
+        ConfigWidget(id="digest_now", kind="action", label="立即整批消化"),
+        ConfigWidget(
+            id="clear_cooldowns",
+            kind="action",
+            label="清空今日分享冷却",
+            confirmation="清空冷却后可能更快主动分享，继续？",
+        ),
+    ]
 
     def __init__(self):
         super().__init__()
@@ -45,9 +56,16 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
         self.zone = ZoneInfo("Asia/Shanghai")
         self.task = None
         self.lock = asyncio.Lock()
+        self.digest_lock = asyncio.Lock()
+        self.jobs = {}
+        self.health = {}
 
     def console_text(self):
-        return f"采集源：{len(self.config.feeds)}；定向路由：{len(self.config.routes)}；内存条目：{len(self.store.data['items']) if self.store else 0}"
+        rows = self.today_items() if self.store else []
+        return (
+            f"来源健康：{self.health}\n观察群：{len(self.config.observe_groups)}；订阅目标：{len(self.config.targets)}\n未消化：{sum(not row.get('digested') for row in rows)}；今日精选：{sum(bool(row.get('prepared')) for row in rows)}\n精选："
+            + "；".join(row["title"] for row in rows if row.get("prepared"))
+        )
 
     async def on_load(self):
         self.zone = ZoneInfo(self.config.timezone)
@@ -57,6 +75,12 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
         self.task = asyncio.create_task(self.loop(), name="zeyr-mai-insights")
 
     async def on_unload(self):
+        if self.store:
+            self.store.save()
+        for task in list(self.jobs.values()):
+            task.cancel()
+        if self.jobs:
+            await asyncio.gather(*list(self.jobs.values()), return_exceptions=True)
         if self.task:
             self.task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -69,6 +93,7 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
         while True:
             try:
                 if self.config.enabled:
+                    self.store.save()
                     await self.collect()
                     await self.prepare()
                     await self.flush_outbox()
@@ -93,13 +118,17 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
         return [row for row in self.store.data["items"] if row.get("logical_date") == day]
 
     def observation(self, platform, group):
+        if any(anchor(row.group) == (platform, "group", group) for row in self.config.observe_groups):
+            return True
         return f"{platform}:{group}" in self.config.passive_observation_groups or (
             platform == "qq" and group in self.config.passive_observation_groups
         )
 
     async def call_optional(self, name, **kwargs):
         try:
-            async with asyncio.timeout(self.config.network_timeout_seconds):
+            async with asyncio.timeout(
+                self.config.network_timeout_seconds if name.startswith("zeyr.better-search.") else 0.4
+            ):
                 if not await self.ctx.api.get(name, version="1"):
                     return None
                 return await self.call(name, **kwargs)
@@ -133,7 +162,7 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
                             raise ValueError("RSS 超过下载上限")
                     return bytes(data)
 
-    def add_item(self, *, title, summary, url, published_at, source):
+    def add_item(self, *, title, summary, url, published_at, source, persist=True):
         now = self.logical_now()
         if (
             published_at.tzinfo is None
@@ -147,6 +176,7 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
         normalized_title = re.sub(r"\W+", "", title).casefold()
         for row in self.today_items():
             if (url and row["url"] == url) or row.get("title_key") == normalized_title:
+                row["tags"] = list(dict.fromkeys(row.get("tags", []) + self.source_tags(source)))
                 return row
         key = hashlib.sha256(f"{source}|{url}|{normalized_title}|{self.logical_date()}".encode()).hexdigest()[
             :24
@@ -158,23 +188,42 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
             "published_at": published_at.isoformat(),
             "title": title[:500],
             "title_key": normalized_title,
-            "summary": summary[:4000],
+            "summary": summary,
             "url": url,
             "insight": "",
             "prepared": False,
+            "tags": self.source_tags(source),
         }
-        self.store.data["items"] = (self.today_items() + [row])[-self.config.max_items :]
-        self.store.save()
+        self.store.data["items"] = self.today_items() + [row]
+        if persist:
+            self.store.save()
         return row
 
     async def collect(self):
         if not self.config.enabled:
             return []
         for feed in self.config.feeds:
-            if not feed.enabled or not feed.url:
+            if not feed.enabled or not (feed.url or feed.rsshub_route):
                 continue
             try:
-                parsed = feedparser.parse(await self.download(feed.url))
+                urls = (
+                    [feed.url]
+                    if feed.url
+                    else [
+                        base.rstrip("/") + "/" + feed.rsshub_route.lstrip("/")
+                        for base in self.config.rsshub_base_urls
+                    ]
+                )
+                parsed = None
+                for url in urls:
+                    try:
+                        parsed = feedparser.parse(await self.download(url))
+                        break
+                    except Exception:
+                        continue
+                if parsed is None:
+                    raise ValueError("所有 RSSHub 地址均失败")
+                self.health[feed.id or feed.url] = "ok"
                 for entry in parsed.entries:
                     raw_date = entry.get("published") or entry.get("updated")
                     published = self.parse_date(raw_date)
@@ -188,6 +237,7 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
                         source=feed.id or feed.url,
                     )
             except Exception as exc:
+                self.health[feed.id or feed.url] = type(exc).__name__
                 self.ctx.logger.warning("RSS %s 采集失败：%s", feed.id, type(exc).__name__)
         return self.today_items()
 
@@ -212,25 +262,157 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
             raise ValueError("后台模型未返回结果")
         return str(response.get("response") or response.get("text") or "").strip()
 
-    async def prepare(self):
-        # Generation runs only in this background stage; queries return the stored pool immediately.
-        for row in [item for item in self.today_items() if not item.get("prepared")][
-            : self.config.prepare_per_tick
-        ]:
-            try:
-                material = {key: row[key] for key in ("title", "summary", "url", "published_at")}
-                if self.config.enrich_with_search and row["url"]:
-                    extra = await self.call_optional("zeyr.better-search.fetch", url=row["url"])
-                    if extra:
-                        material["body"] = str(extra.get("text") or "")[:8000]
-                text = await self.generate(
-                    render(self.config.insight_instruction, material=json.dumps(material, ensure_ascii=False))
-                )
-                if text:
-                    row.update(insight=text[:1000], prepared=True)
-                    self.store.save()
-            except Exception:
-                continue
+    def source_tags(self, source):
+        if source.startswith("group:"):
+            _, platform, group = source.split(":", 2)
+            return next(
+                (
+                    row.tags
+                    for row in self.config.observe_groups
+                    if anchor(row.group) == (platform, "group", group)
+                ),
+                ["default"],
+            )
+        return next((feed.tags for feed in self.config.feeds if source in (feed.id, feed.url)), ["default"])
+
+    def split_material(self, rows):
+        chunks, current, size = [], [], 0
+        for row in rows:
+            # Long single inputs are split too; the raw record remains available for provenance.
+            material = json.dumps(
+                {
+                    "item_id": row["id"],
+                    "title": row["title"],
+                    "source": row["source"],
+                    "url": row["url"],
+                    "summary": row["summary"],
+                },
+                ensure_ascii=False,
+            )
+            for offset in range(0, len(material), self.config.batch_max_chars):
+                part = material[offset : offset + self.config.batch_max_chars]
+                if current and (
+                    len(current) >= self.config.batch_max_items
+                    or size + len(part) > self.config.batch_max_chars
+                ):
+                    chunks.append(current)
+                    current, size = [], 0
+                current.append(part)
+                size += len(part)
+        if current:
+            chunks.append(current)
+        return chunks
+
+    async def digest_chunk(self, material):
+        text = await self.generate(render(self.config.digest_instruction, material=material))
+        if len(text) > self.config.batch_max_chars // 2:
+            raise ValueError("中间摘要过长，保留全部原料和处理游标")
+        return text
+
+    async def prepare(self, force=False):
+        if self.digest_lock.locked():
+            return
+        async with self.digest_lock:
+            now = self.logical_now()
+            stamp = self.store.data.get("digest_at")
+            if (
+                not force
+                and stamp
+                and now
+                < datetime.fromisoformat(stamp) + timedelta(minutes=self.config.digest_interval_minutes)
+            ):
+                return
+            state = await self.call_optional("zeyr.mai-day.get_state")
+            if state and state.get("sleeping") and not force:
+                return
+            rows = [item for item in self.today_items() if not item.get("digested")]
+            if not rows:
+                return
+            maps = []
+            for chunk in self.split_material(rows):
+                maps.append(await self.digest_chunk("\n".join(chunk)))
+            # Hierarchical reduction keeps every map covered without a single unbounded prompt.
+            while len(maps) > 1:
+                groups, group, size = [], [], 0
+                for value in maps:
+                    if len(value) > self.config.batch_max_chars // 2:
+                        raise ValueError("中间摘要超过安全合并容量，保留游标等待重试")
+                    if group and size + len(value) > self.config.batch_max_chars:
+                        groups.append(group)
+                        group, size = [], 0
+                    group.append(value)
+                    size += len(value)
+                if group:
+                    groups.append(group)
+                if len(groups) >= len(maps):
+                    raise ValueError("摘要分段无法收敛，请调整 batch_max_chars")
+                maps = [await self.digest_chunk("\n".join(group)) for group in groups]
+            raw = maps[0].strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
+            output = json.loads(raw)
+            if (
+                not isinstance(output, dict)
+                or not isinstance(output.get("overview"), str)
+                or not isinstance(output.get("insights", []), list)
+            ):
+                raise ValueError("批次输出必须是 overview / insights 结构")
+            # Only existing items can be selected; no model-created IDs or links are accepted.
+            if any(row["logical_date"] != self.logical_date().isoformat() for row in rows):
+                return
+            indexed = {row["id"]: row for row in rows}
+            for selected in output.get("insights", [])[: self.config.max_insights_per_digest]:
+                if (
+                    isinstance(selected, dict)
+                    and selected.get("item_id") in indexed
+                    and isinstance(selected.get("text"), str)
+                    and selected["text"].strip()
+                ):
+                    indexed[selected["item_id"]].update(insight=selected["text"][:1000], prepared=True)
+            for row in rows:
+                row["digested"] = True
+            self.store.data.setdefault("digests", []).append(
+                {
+                    "logical_date": self.logical_date().isoformat(),
+                    "overview": output["overview"],
+                    "item_ids": [row["id"] for row in rows],
+                    "at": now.isoformat(),
+                }
+            )
+            self.store.data["digest_at"] = now.isoformat()
+            self.store.save()
+
+    async def get_config_widget_state(self):
+        states = await super().get_config_widget_state()
+        return {
+            **states,
+            **{
+                name: ConfigWidgetState(disabled=name in self.jobs)
+                for name in ("collect_now", "digest_now", "clear_cooldowns")
+            },
+        }
+
+    async def console_job(self, action_id):
+        try:
+            if action_id == "collect_now":
+                await self.collect()
+            elif action_id == "digest_now":
+                await self.prepare(force=True)
+        except Exception:
+            self.ctx.logger.exception("见闻控制台任务失败")
+        finally:
+            self.jobs.pop(action_id, None)
+
+    async def on_config_widget_action(self, action_id):
+        if action_id == "clear_cooldowns":
+            self.store.data["cooldowns"] = {}
+            self.store.save()
+            return
+        if action_id in ("collect_now", "digest_now"):
+            if action_id not in self.jobs:
+                self.jobs[action_id] = asyncio.create_task(self.console_job(action_id))
+            return
+        await super().on_config_widget_action(action_id)
 
     @HookHandler("chat.receive.after_process")
     async def observe_message(self, message=None, **kwargs):
@@ -240,10 +422,12 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
         if not await self.in_scope(message, **kwargs):
             return {"action": "continue"}
         platform, user, group, _ = identity(message)
-        if not group or not self.observation(platform, group):
-            return {"action": "continue"}
         bot = await self.call_optional("zeyr.mai-circle.is_bot", platform=platform, user_id=user)
         if bot and bot.get("value"):
+            return {"action": "continue"}
+        target = f"{platform}:group:{group}" if group else f"{platform}:private:{user}"
+        self.store.data.setdefault("activity", {})[target] = self.logical_now().isoformat()
+        if not group or not self.observation(platform, group):
             return {"action": "continue"}
         text = clean(message.get("processed_plain_text") or "")
         if text:
@@ -263,11 +447,29 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
                     url="",
                     published_at=published,
                     source=f"group:{platform}:{group}",
+                    persist=False,
                 )
         return {"action": "continue"}
 
     def local_share_allowed(self, target):
         stamp = self.store.data.setdefault("cooldowns", {}).get(target)
+        # Explicit targets are mandatory; compatibility callers with opaque names use legacy local tests only.
+        try:
+            platform, kind, value = anchor(target)
+        except ValueError:
+            if target.count(":") == 1:
+                platform, value = target.split(":", 1)
+                kind = "group"
+            else:
+                platform, kind, value = "qq", "group", target
+        key = f"{platform}:{kind}:{value}"
+        active = self.store.data.get("activity", {}).get(key)
+        if ":" in target and (
+            not active
+            or self.logical_now() - datetime.fromisoformat(active)
+            > timedelta(minutes=self.config.active_recent_minutes)
+        ):
+            return False
         hour = self.logical_now().hour
         start, end = self.config.fallback_open_start_hour, self.config.fallback_open_end_hour
         in_window = start <= hour < end if start < end else hour >= start or hour < end
@@ -299,12 +501,42 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
         if not self.config.enabled or not self.config.share_enabled:
             return False
         async with self.lock:
+            for target in self.config.targets:
+                if target.mode == "digest":
+                    continue
+                platform, kind, value = anchor(target.chat)
+                if kind == "group" and self.observation(platform, value):
+                    continue
+                if not await self.target_in_scope(
+                    platform, value if kind == "group" else "", value if kind == "private" else ""
+                ):
+                    continue
+                candidates = [
+                    row
+                    for row in self.today_items()
+                    if row.get("prepared")
+                    and row["source"] not in target.exclude_sources
+                    and ("*" in target.subscribe or set(target.subscribe) & set(row.get("tags", ["default"])))
+                ]
+                stream = await self.resolve_stream(
+                    platform,
+                    group_id=value if kind == "group" else "",
+                    user_id=value if kind == "private" else "",
+                )
+                if not stream:
+                    continue
+                for row in candidates:
+                    if f"{stream}:{row['id']}" not in self.store.data["shared"] and self.local_share_allowed(
+                        target.chat
+                    ):
+                        if await self.send_item(row, stream, target.chat):
+                            return True
             for route in self.config.routes:
                 for row in [
                     item for item in self.today_items() if item.get("prepared") and self.matches(item, route)
                 ]:
                     for group in route.target_group_ids:
-                        target = f"{route.platform}:{group}"
+                        target = f"{route.platform}:group:{group}"
                         if not await self.target_in_scope(route.platform, group_id=group):
                             continue
                         if self.observation(route.platform, group) or group == route.source_group_id:
@@ -325,7 +557,7 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
     async def send_item(self, item, stream, target):
         lease, sent, receipt = None, False, ""
         try:
-            async with asyncio.timeout(self.config.network_timeout_seconds):
+            async with asyncio.timeout(0.4):
                 installed = await self.ctx.api.get("zeyr.mai-day.reserve_share", version="1")
             if installed:
                 reservation = await self.call("zeyr.mai-day.reserve_share", stream_id=stream)
@@ -339,6 +571,8 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
                     stream, reference=item["insight"], format_instruction=self.config.share_instruction
                 )
             if not isinstance(generated, dict) or not generated.get("success") or not generated.get("text"):
+                return False
+            if item.get("logical_date", self.logical_date().isoformat()) != self.logical_date().isoformat():
                 return False
             text = generated["text"].strip()
             if lease:
@@ -410,16 +644,21 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
     async def query_insights(self, topic="", **kwargs):
         if not await self.in_scope(**kwargs):
             return result(error="当前会话不在插件生效范围")
-        rows = self.today_items() if self.config.enabled else []
+        rows = [row for row in self.today_items() if row.get("prepared")] if self.config.enabled else []
         if topic:
             rows = [row for row in rows if topic.casefold() in (row["title"] + row["summary"]).casefold()]
         return result({"logical_date": self.logical_date().isoformat(), "items": rows})
 
     @API("get_today_insights", public=True, version="1")
-    async def api_today(self, limit=20, **kwargs):
+    async def api_today(self, limit=3, topic="", **kwargs):
         try:
             rows = (
-                self.today_items()[: max(1, min(int(limit), self.config.max_items))]
+                [
+                    row
+                    for row in self.today_items()
+                    if row.get("prepared")
+                    and (not topic or topic.casefold() in (row["title"] + row["insight"]).casefold())
+                ][: max(1, min(int(limit), self.config.max_items))]
                 if self.config.enabled
                 else []
             )
@@ -446,6 +685,13 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
             if not stream:
                 raise ValueError("找不到来源群会话")
             return await self.group_summary(stream)
+        digests = [
+            row
+            for row in self.store.data.get("digests", [])
+            if row["logical_date"] == self.logical_date().isoformat()
+        ]
+        if source == "all" and digests:
+            return "\n".join(row["overview"] for row in digests)[-self.config.summary_max_chars :]
         rows = self.today_items()
         if source == "feeds":
             rows = [row for row in rows if not row["source"].startswith("group:")]
@@ -537,6 +783,42 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
         now = self.logical_now()
         if now.hour not in self.config.summary_hours:
             return
+        for target in self.config.targets:
+            if target.mode == "insight":
+                continue
+            platform, kind, value = anchor(target.chat)
+            if (kind == "group" and self.observation(platform, value)) or not await self.target_in_scope(
+                platform, value if kind == "group" else "", value if kind == "private" else ""
+            ):
+                continue
+            key = f"{now.date()}:{now.hour}:target:{target.chat}"
+            if key in self.store.data.setdefault("summaries", {}):
+                continue
+            rows = [
+                row
+                for row in self.today_items()
+                if row["source"] not in target.exclude_sources
+                and ("*" in target.subscribe or set(target.subscribe) & set(row.get("tags", ["default"])))
+            ]
+            if not rows:
+                continue
+            parts = [
+                await self.generate(render(self.config.summary_instruction, material="\n".join(chunk)))
+                for chunk in self.split_material(rows)
+            ]
+            text = "\n".join(parts)[: self.config.summary_max_chars]
+            stream = await self.resolve_stream(
+                platform,
+                group_id=value if kind == "group" else "",
+                user_id=value if kind == "private" else "",
+            )
+            if stream:
+                sent = await service_send(
+                    self.ctx, text, stream, return_details=True, sync_to_maisaka_history=False
+                )
+                if send_succeeded(sent):
+                    self.store.data["summaries"][key] = send_receipt(sent, key)
+                    self.store.save()
         for target in self.config.summary_targets:
             if not await self.target_in_scope(target.platform, target.group_id, target.user_id):
                 continue
