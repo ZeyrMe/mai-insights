@@ -8,9 +8,7 @@ from conftest import module
 def plugin(tmp_path):
     instance = module.Plugin()
     instance.set_plugin_config({"plugin": {"config_version": "0.1.0"}})
-    instance.store = module.StateFile(
-        tmp_path / "insights.json", {"schema_version": 1, "items": [], "shared": {}}
-    )
+    instance.store = module.StateFile(tmp_path / "insights.json", module.initial_state())
     instance.logical_now = lambda: datetime.fromisoformat("2026-11-27T12:00:00+08:00")
     return instance
 
@@ -22,12 +20,13 @@ async def test_collects_only_current_logical_day_and_deduplicates(plugin, monkey
       <item><title>昨天新闻</title><link>https://x.test/yesterday</link><pubDate>Thu, 26 Nov 2026 09:00:00 +0800</pubDate></item>
     </channel></rss>""".encode()
 
-    class Response:
-        def read(self):
-            return xml
+    async def fake_download(url):
+        return xml
 
-    monkeypatch.setattr(module, "urlopen", lambda *args, **kwargs: Response())
-    plugin.config.feeds = [module.config_models.Feed(id="feed", url="https://feed.test/rss")]
+    monkeypatch.setattr(plugin, "download", fake_download)
+    from test_mai_insights.config_models import Feed
+
+    plugin.config.feeds = [Feed(id="feed", url="https://feed.test/rss")]
     first = await plugin.collect()
     second = await plugin.collect()
     assert len(first) == len(second) == 1
@@ -37,6 +36,20 @@ async def test_collects_only_current_logical_day_and_deduplicates(plugin, monkey
 
 @pytest.mark.asyncio
 async def test_mark_shared_is_idempotent(plugin):
+    plugin.store.data["items"].append(
+        {
+            "id": "item",
+            "logical_date": plugin.logical_date().isoformat(),
+            "source": "feed",
+            "published_at": plugin.logical_now().isoformat(),
+            "title": "x",
+            "title_key": "x",
+            "summary": "x",
+            "url": "https://x.test",
+            "insight": "x",
+            "prepared": True,
+        }
+    )
     first = await plugin.api_mark_shared("item", "group", "receipt")
     second = await plugin.api_mark_shared("item", "group", "receipt")
     assert first["data"] == second["data"]
@@ -45,5 +58,26 @@ async def test_mark_shared_is_idempotent(plugin):
 
 def test_local_share_cooldown(plugin):
     assert plugin.local_share_allowed("group")
-    plugin.store.data["shared"]["cooldown:group"] = plugin.logical_now().isoformat()
+    plugin.store.data["cooldowns"]["group"] = plugin.logical_now().isoformat()
     assert not plugin.local_share_allowed("group")
+
+
+@pytest.mark.asyncio
+async def test_summary_is_bounded_and_does_not_require_chat_context(plugin):
+    plugin.store.data["items"].append(
+        {
+            "id": "item",
+            "logical_date": plugin.logical_date().isoformat(),
+            "source": "feed",
+            "published_at": plugin.logical_now().isoformat(),
+            "title": "x",
+            "title_key": "x",
+            "summary": "摘要",
+            "url": "https://x.test",
+            "insight": "已整理见闻",
+            "prepared": True,
+        }
+    )
+    plugin.generate = lambda prompt: None
+    summary = "\n".join(row["insight"] for row in plugin.today_items())
+    assert "已整理见闻" in summary
