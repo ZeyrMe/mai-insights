@@ -1,6 +1,8 @@
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import field_validator
 
+from .ecosystem import ScopeConfig
+
 
 class Feed(PluginConfigBase):
     id: str = Field(default="", description="稳定来源 ID")
@@ -33,6 +35,7 @@ class PluginInfo(PluginConfigBase):
 
 
 class Config(PluginConfigBase):
+    scope: ScopeConfig = Field(default_factory=ScopeConfig, description="独立会话与用户生效范围")
     show_advanced: bool = Field(default=False, description="显示高级设置")
     plugin: PluginInfo = Field(default_factory=PluginInfo)
     enabled: bool = Field(default=True, description="启用插件")
@@ -100,3 +103,14 @@ for _name, _field in Config.model_fields.items():
             "depends_value": True,
         }
 Config.model_rebuild(force=True)
+
+
+# SDK labels otherwise fall back to Python field names in top-level sections.
+for _model in list(globals().values()):
+    if isinstance(_model, type) and issubclass(_model, PluginConfigBase):
+        for _field_name, _field_info in _model.model_fields.items():
+            _field_info.json_schema_extra = {
+                "label": _field_info.description or _field_name,
+                **(_field_info.json_schema_extra or {}),
+            }
+        _model.model_rebuild(force=True)

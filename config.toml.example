@@ -27,5 +27,16 @@ summary_targets = []
 admins = []
 model_task = ""
 
+[scope]
+mode = "all"
+groups = []
+privates = []
+users = []
+exclude = []
+allow_private = true
+reference_cache_seconds = 60
+api_timeout_seconds = 0.4
+max_tracked_streams = 256
+
 [plugin]
 config_version = "0.1.0"

@@ -16,6 +16,7 @@ from maibot_sdk import API, Command, HookHandler, MaiBotPlugin, Tool
 from maibot_sdk.types import HookOrder
 
 from .config_models import Config
+from .ecosystem import EcosystemMixin
 from .runtime import StateFile, identity, render, result, send_receipt, send_succeeded, service_send
 
 
@@ -35,7 +36,7 @@ def initial_state():
     return {"schema_version": 1, "items": [], "shared": {}, "cooldowns": {}, "outbox": {}, "summaries": {}}
 
 
-class Plugin(MaiBotPlugin):
+class Plugin(EcosystemMixin, MaiBotPlugin):
     config_model = Config
 
     def __init__(self):
@@ -44,6 +45,9 @@ class Plugin(MaiBotPlugin):
         self.zone = ZoneInfo("Asia/Shanghai")
         self.task = None
         self.lock = asyncio.Lock()
+
+    def console_text(self):
+        return f"采集源：{len(self.config.feeds)}；定向路由：{len(self.config.routes)}；内存条目：{len(self.store.data['items']) if self.store else 0}"
 
     async def on_load(self):
         self.zone = ZoneInfo(self.config.timezone)
@@ -233,6 +237,8 @@ class Plugin(MaiBotPlugin):
         if not self.config.enabled:
             return {"action": "continue"}
         message = message or {}
+        if not await self.in_scope(message, **kwargs):
+            return {"action": "continue"}
         platform, user, group, _ = identity(message)
         if not group or not self.observation(platform, group):
             return {"action": "continue"}
@@ -299,6 +305,8 @@ class Plugin(MaiBotPlugin):
                 ]:
                     for group in route.target_group_ids:
                         target = f"{route.platform}:{group}"
+                        if not await self.target_in_scope(route.platform, group_id=group):
+                            continue
                         if self.observation(route.platform, group) or group == route.source_group_id:
                             continue
                         if f"{target}:{row['id']}" in self.store.data["shared"]:
@@ -400,6 +408,8 @@ class Plugin(MaiBotPlugin):
         visibility="visible",
     )
     async def query_insights(self, topic="", **kwargs):
+        if not await self.in_scope(**kwargs):
+            return result(error="当前会话不在插件生效范围")
         rows = self.today_items() if self.config.enabled else []
         if topic:
             rows = [row for row in rows if topic.casefold() in (row["title"] + row["summary"]).casefold()]
@@ -491,6 +501,8 @@ class Plugin(MaiBotPlugin):
 
     @Command("summarize", pattern=r"^/总结(?:\s+(?P<scope>群内|全网|全部)(?:\s+(?P<group_id>\S+))?)?$")
     async def summarize_command(self, message=None, matched_groups=None, stream_id="", **kwargs):
+        if not await self.in_scope(message, stream_id=stream_id):
+            return False, "当前会话不在插件生效范围", 1
         if not self.config.enabled:
             return False, "插件已禁用", 1
         platform, user, group, _ = identity(message or {})
@@ -526,6 +538,8 @@ class Plugin(MaiBotPlugin):
         if now.hour not in self.config.summary_hours:
             return
         for target in self.config.summary_targets:
+            if not await self.target_in_scope(target.platform, target.group_id, target.user_id):
+                continue
             if target.group_id and self.observation(target.platform, target.group_id):
                 continue
             key = f"{now.date()}:{now.hour}:{target.model_dump_json()}"
