@@ -28,7 +28,8 @@
     "chat.get_stream_by_user_id",
     "send.text",
     "llm.generate",
-    "maisaka.reply.generate"
+    "maisaka.reply.generate",
+    "message.get_by_time_in_chat"
   ],
   "i18n": {
     "default_locale": "zh-CN"

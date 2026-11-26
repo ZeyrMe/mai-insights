@@ -16,7 +16,7 @@ from maibot_sdk import API, Command, HookHandler, MaiBotPlugin, Tool
 from maibot_sdk.types import HookOrder
 
 from .config_models import Config
-from .runtime import StateFile, identity, render, result
+from .runtime import StateFile, identity, render, result, send_receipt, send_succeeded, service_send
 
 
 def clean(value):
@@ -342,8 +342,8 @@ class Plugin(MaiBotPlugin):
             response = await self.ctx.send.text(
                 text, stream, return_details=True, sync_to_maisaka_history=True
             )
-            sent = bool(isinstance(response, dict) and response.get("success") and response.get("sent"))
-            receipt = str(response.get("message_id") or (lease or {}).get("id") or item["id"]) if sent else ""
+            sent = send_succeeded(response)
+            receipt = send_receipt(response, (lease or {}).get("id") or item["id"]) if sent else ""
             if sent:
                 # Persist the actual send before remote settlement so retries never duplicate a delivered message.
                 self.mark_delivery(item["id"], stream, receipt, target)
@@ -430,6 +430,12 @@ class Plugin(MaiBotPlugin):
         return result({"marked": True, "key": f"{stream_id}:{item_id}"})
 
     async def summary(self, source="all"):
+        if source.startswith("group:"):
+            _, platform, group_id = source.split(":", 2)
+            stream = await self.resolve_stream(platform, group_id=group_id)
+            if not stream:
+                raise ValueError("找不到来源群会话")
+            return await self.group_summary(stream)
         rows = self.today_items()
         if source == "feeds":
             rows = [row for row in rows if not row["source"].startswith("group:")]
@@ -444,7 +450,46 @@ class Plugin(MaiBotPlugin):
         text = await self.generate(render(self.config.summary_instruction, material=material[:30000]))
         return text[: self.config.summary_max_chars]
 
-    @Command("summarize", pattern=r"^/总结(?:\s+(?P<scope>群内|全网|全部))?$")
+    async def group_summary(self, stream):
+        now = self.logical_now()
+        start = datetime.combine(self.logical_date(now), datetime.min.time(), self.zone) + timedelta(
+            hours=self.config.day_rollover_hour
+        )
+        # Host 1.4.8 converts these values with float(), despite SDK's str annotations.
+        async with asyncio.timeout(self.config.network_timeout_seconds):
+            response = await self.ctx.message.get_by_time_in_chat(
+                stream,
+                str(start.timestamp()),
+                str(now.timestamp()),
+                limit=self.config.summary_message_limit,
+                limit_mode="latest",
+                filter_command=True,
+                include_binary_data=False,
+            )
+        if not isinstance(response, dict) or not response.get("success"):
+            raise ValueError("读取群消息失败")
+        rows = response.get("messages") or []
+        material = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            text = clean(row.get("processed_plain_text") or "")
+            if not text or text.startswith("/总结"):
+                continue
+            _, user, _, _ = identity(row)
+            material.append(
+                {"user": user, "text": text[:2000], "time": row.get("timestamp") or row.get("time")}
+            )
+        if not material:
+            return "当前逻辑日没有符合条件的资料。"
+        text = await self.generate(
+            render(
+                self.config.summary_instruction, material=json.dumps(material, ensure_ascii=False)[-30000:]
+            )
+        )
+        return text[: self.config.summary_max_chars]
+
+    @Command("summarize", pattern=r"^/总结(?:\s+(?P<scope>群内|全网|全部)(?:\s+(?P<group_id>\S+))?)?$")
     async def summarize_command(self, message=None, matched_groups=None, stream_id="", **kwargs):
         if not self.config.enabled:
             return False, "插件已禁用", 1
@@ -455,16 +500,24 @@ class Plugin(MaiBotPlugin):
             admin = bool(external and external.get("value"))
         if not admin:
             return False, "需要管理员权限", 1
+        if self.observation(platform, group):
+            return False, "观察群不发送总结；请在其他群或私聊指定来源群", 1
         scope = (matched_groups or {}).get("scope") or "全部"
-        source = f"group:{platform}:{group}" if scope == "群内" else "feeds" if scope == "全网" else "all"
+        source_group = (matched_groups or {}).get("group_id") or group
+        if scope == "群内" and not source_group:
+            return False, "私聊请使用 /总结 群内 群号", 1
+        if (matched_groups or {}).get("group_id") and scope != "群内":
+            return False, "仅群内总结支持指定来源群", 1
+        source = (
+            f"group:{platform}:{source_group}" if scope == "群内" else "feeds" if scope == "全网" else "all"
+        )
         try:
             text = await self.summary(source)
-            if self.observation(platform, group):
-                return False, "观察群不发送总结；请配置总结目标或私聊查询", 1
-            response = await self.ctx.send.text(
-                text, stream_id, return_details=True, sync_to_maisaka_history=False
+            response = await service_send(
+                self.ctx, text, stream_id, return_details=True, sync_to_maisaka_history=False
             )
-            return bool(isinstance(response, dict) and response.get("sent")), "总结完成", 2
+            sent = send_succeeded(response)
+            return sent, "总结完成" if sent else "总结未送达，可稍后重试", 2 if sent else 1
         except Exception:
             return False, "总结生成失败，可稍后重试", 1
 
@@ -484,11 +537,11 @@ class Plugin(MaiBotPlugin):
             if not stream:
                 continue
             text = await self.summary(target.source)
-            response = await self.ctx.send.text(
-                text, stream, return_details=True, sync_to_maisaka_history=False
+            response = await service_send(
+                self.ctx, text, stream, return_details=True, sync_to_maisaka_history=False
             )
-            if isinstance(response, dict) and response.get("success") and response.get("sent"):
-                self.store.data["summaries"][key] = str(response.get("message_id") or key)
+            if send_succeeded(response):
+                self.store.data["summaries"][key] = send_receipt(response, key)
                 self.store.save()
 
     @HookHandler("send_service.before_send", order=HookOrder.LATE)
