@@ -68,3 +68,24 @@ async def test_new_observation_sources_are_always_muted_and_have_tags(tmp_path):
         message={"platform": "qq", "message_info": {"group_info": {"group_id": "observed"}}}
     )
     assert response["action"] == "abort"
+
+
+async def test_optional_search_enrichment_is_bounded_and_material_reaches_digest(tmp_path):
+    p = make(tmp_path)
+    p.config.batch_max_chars = 10000
+    p.config.max_enrich_per_digest = 1
+    for i in range(2):
+        p.add_item(
+            title=f"材料{i}",
+            summary="摘要",
+            url=f"https://news.example/{i}",
+            published_at=p.logical_now(),
+            source="f",
+        )
+    p.call_optional = AsyncMock(side_effect=[None, {"text": "补充的正文"}])
+    p.generate = AsyncMock(return_value=json.dumps({"overview": "总览", "insights": []}))
+    await p.prepare(force=True)
+    calls = [call for call in p.call_optional.await_args_list if call.args[0] == "zeyr.better-search.fetch"]
+    assert len(calls) == 1
+    assert "补充的正文" in p.generate.await_args_list[0].args[0]
+    assert all(row["digested"] for row in p.today_items())

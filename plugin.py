@@ -286,6 +286,7 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
                     "source": row["source"],
                     "url": row["url"],
                     "summary": row["summary"],
+                    "body": row.get("body", ""),
                 },
                 ensure_ascii=False,
             )
@@ -328,6 +329,14 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
             rows = [item for item in self.today_items() if not item.get("digested")]
             if not rows:
                 return
+            if self.config.enrich_with_search:
+                candidates = [row for row in rows if row["url"] and "body" not in row][
+                    : self.config.max_enrich_per_digest
+                ]
+                for row in candidates:
+                    extra = await self.call_optional("zeyr.better-search.fetch", url=row["url"])
+                    if extra and extra.get("text"):
+                        row["body"] = str(extra["text"])[: self.config.enrich_body_chars]
             maps = []
             for chunk in self.split_material(rows):
                 maps.append(await self.digest_chunk("\n".join(chunk)))
