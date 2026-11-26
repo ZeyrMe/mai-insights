@@ -23,7 +23,9 @@
   "dependencies": [],
   "capabilities": [
     "api.get",
-    "api.call"
+    "api.call",
+    "chat.get_stream_by_group_id",
+    "send.text"
   ],
   "i18n": {
     "default_locale": "zh-CN"

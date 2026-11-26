@@ -1,5 +1,16 @@
 # Generated from config_models.py; instance config.toml stays local.
+show_advanced = false
 enabled = true
+feeds = []
+routes = []
+passive_observation_groups = []
+timezone = "Asia/Shanghai"
+day_rollover_hour = 5
+max_items = 30
+share_cooldown_minutes = 60
+insight_template = "{title}：{summary}"
+share_enabled = true
+tick_seconds = 60
 
 [plugin]
 config_version = "0.1.0"
