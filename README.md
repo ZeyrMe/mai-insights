@@ -2,6 +2,13 @@
 
 订阅资讯与群聊话题，支持主动分享与聊天总结
 
+![Version](https://img.shields.io/badge/version-0.2.0-brightgreen)
+![MaiBot](https://img.shields.io/badge/MaiBot-1.4.8%2B-2f81f7)
+![SDK](https://img.shields.io/badge/SDK-2.23.0-0e8a16)
+![Python](https://img.shields.io/badge/Python-3.12%2B-3776ab)
+![Standalone](https://img.shields.io/badge/独立运行-支持-blue)
+![License](https://img.shields.io/badge/License-MIT-lightgrey)
+
 ## 功能介绍
 
 - **标签化订阅分发**：RSS 订阅源与观察群分别标注主题标签，接收目标按标签自由订阅（支持 `*` 全选）与排除来源。
