@@ -116,9 +116,9 @@ class TargetRule(PluginConfigBase):
         json_schema_extra={
             "label": "推送方式",
             "enum_labels": {
-                "insight": "insight（活人分享：摸鱼空闲时自然搬运 1 条有趣见闻）",
-                "digest": "digest（工具播报：仅在指定整点发客观整理总结）",
-                "both": "both（两种都收，各自保持物理隔离）",
+                "insight": "insight（主动分享）",
+                "digest": "digest（定时总结）",
+                "both": "both（分享与总结）",
             },
         },
     )
@@ -167,57 +167,57 @@ class Config(PluginConfigBase):
     plugin: PluginInfo = Field(default_factory=PluginInfo)
     enabled: bool = Field(
         default=True,
-        description="开启后后台静默攒料并整批提炼见闻与总结。",
+        description="开启后后台采集订阅与群聊话题，按周期汇总整理与分享。",
         json_schema_extra={
             "label": "启用见闻",
             "order": 1,
-            "hint": "开源默认没有任何源和发送目标，填完下方「RSS / 观察群 + 订阅目标」才会开始采集分享；绝不会向观察群发言。",
+            "hint": "默认不含任何来源和目标，填写下方订阅源、观察群与订阅目标后生效；绝不会向观察群主动发言。",
         },
     )
     feeds: list[Feed] = Field(
         default_factory=list,
-        description="要追踪的外部 RSS / RSSHub 信息源，只采集当天带发布时间的新条目。",
+        description="需要订阅的外部 RSS / RSSHub 源，仅收录当天新发布的内容。",
         json_schema_extra={
             "label": "RSS 订阅源",
             "order": 2,
-            "hint": "每个源只要填「订阅代号 + 链接（或 RSSHub 路径）+ 主题标签」；抓回来只做时间过滤和去重，完全不烧模型额度，等整批窗口一起提炼。",
+            "hint": "填「订阅代号 + 链接（或 RSSHub 路径）+ 主题标签」；采集和去重阶段不消耗模型额度。",
         },
     )
     observe_groups: list[ObserveGroupSource] = Field(
         default_factory=list,
-        description="只潜水采集话题的观察群；这些群本身死锁不发言。",
+        description="只记录讨论话题、不在群内主动发言的观察群。",
         json_schema_extra={
             "label": "观察群来源",
             "order": 3,
-            "hint": "填「观察群号 + 主题标签」。Bot 在这些群里永远只看不说、连 /总结 也不会原地回复，自动过滤同行 Bot 噪音后把有意思的话题提炼搬到你的目标群。",
+            "hint": "填「观察群号 + 主题标签」。Bot 在观察群内只记录不发言（不响应群内 /总结），并自动跳过其他 Bot 消息。",
         },
     )
     targets: list[TargetRule] = Field(
         default_factory=list,
-        description="每个群或显式私聊想看哪些标签、用活人分享还是工具总结模式。",
+        description="配置哪些群或私聊接收哪些标签的内容以及发送模式。",
         json_schema_extra={
             "label": "订阅目标",
             "order": 4,
-            "hint": "N+M 标签配对：每个目标写要看的群号（私聊写 private:QQ号）和 subscribe 标签（* 全收）；mode 选 insight（活人搬运）/ digest（整点总结）/ both。不填目标就不会主动往外发。",
+            "hint": "每个目标写群号（私聊写 private:QQ号）、订阅标签（* 为全部）及推送方式（insight / digest / both）。留空则不主动发送。",
         },
     )
     rsshub_base_urls: list[str] = Field(
         default_factory=list,
-        description="多个 RSSHub 服务根地址，前面的抓不到会自动顺延试下一个。",
+        description="多个 RSSHub 服务根地址，前面的请求失败时自动尝试下一个。",
         json_schema_extra={
             "label": "RSSHub 地址列表",
             "placeholder": "填写 RSSHub 服务根地址（不含末尾斜杠），如 https://rsshub.example.com",
-            "hint": "当订阅源填了“RSSHub 路径”时生效；建议填 2 个互为备份的实例地址，第一个挂了自动换下一个。",
+            "hint": "配合“RSSHub 路径”使用，建议填 2 个互为备份的实例地址。",
         },
     )
     digest_interval_minutes: float = Field(
         default=180,
         ge=1,
         le=1440,
-        description="后台积累了新料后，每隔多少分钟醒着整批消化一次。",
+        description="有新内容时每隔多少分钟汇总整理一次。",
         json_schema_extra={
-            "label": "整批消化间隔",
-            "hint": "单位：分钟（默认 180 分钟 = 3 小时）。只在有新材料且当前未睡着时才调用一次模型统一消化；WebUI 也能随时点按钮立刻消化。",
+            "label": "汇总整理间隔",
+            "hint": "单位：分钟（默认 180 分钟 = 3 小时）。仅在有新内容且未入睡时调用模型整理；控制台也可手动触发。",
         },
     )
     batch_max_items: int = Field(
@@ -307,10 +307,10 @@ class Config(PluginConfigBase):
     )
     share_enabled: bool = Field(
         default=True,
-        description="允许摸鱼空闲时主动往目标群里搬一条今天刷到的见闻。",
+        description="允许在空闲时段主动向目标群分享当日精选见闻。",
         json_schema_extra={
-            "label": "允许主动搬运",
-            "hint": "关闭后不再自动往群里分享见闻，只保留后台总结、定时播报和“今天看了啥”主动查询工具。",
+            "label": "启用主动分享",
+            "hint": "关闭后不再自动向群里发见闻，仅保留汇总、定时总结与工具查询。",
         },
     )
     tick_seconds: int = Field(
@@ -399,11 +399,11 @@ class Config(PluginConfigBase):
         json_schema_extra={"label": "兼容见闻模板", "hidden": True},
     )
     share_instruction: str = Field(
-        default="像平时逛网看到好玩东西顺手跟朋友分享一样，用当下人设自然聊一两句这条新鲜事，别写成新闻播报。",
-        description="以活人聊天口吻把精选见闻搬进群时的语气要求。",
+        default="像平时看到有趣内容跟朋友分享一样，用当下语气自然聊一两句这条内容，不要写成新闻播报。",
+        description="主动分享见闻到群聊时的语气提示。",
         json_schema_extra={
-            "label": "人设搬运要求",
-            "hint": "发到群里前会调用该会话平时的人设加上这句要求改写。",
+            "label": "分享语气提示",
+            "hint": "发送前会结合该会话人设与这条提示改写。",
         },
     )
     summary_instruction: str = Field(

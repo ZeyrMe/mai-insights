@@ -41,7 +41,7 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
     config_model = Config
     config_widgets = EcosystemMixin.config_widgets + [
         ConfigWidget(id="collect_now", kind="action", label="立即采集全部来源"),
-        ConfigWidget(id="digest_now", kind="action", label="立即整批消化"),
+        ConfigWidget(id="digest_now", kind="action", label="立即整理汇总"),
         ConfigWidget(
             id="clear_cooldowns",
             kind="action",
@@ -77,7 +77,7 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
         return (
             f"订阅源健康：{health_line}\n"
             f"路由配置：{len(self.config.feeds)} 个 RSS 源 · {len(self.config.observe_groups)} 个观察群 · {len(self.config.targets)} 个接收目标\n"
-            f"今日材料池：待整批消化 {pending} 条，已精选出 {len(prepared)} 条"
+            f"今日材料池：待整理 {pending} 条，已精选 {len(prepared)} 条"
             + (f"（{'；'.join(prepared)}）" if prepared else "")
         )
 
@@ -661,7 +661,7 @@ class Plugin(EcosystemMixin, MaiBotPlugin):
 
     @Tool(
         "query_today_insights",
-        description="立即查询后台已整理的今日见闻，不现场抓取。",
+        description="查询今日已整理的资讯与群聊话题。",
         parameters={"topic": {"type": "string", "default": ""}},
         visibility="visible",
     )

@@ -3,7 +3,7 @@
   "id": "zeyr.mai-insights",
   "version": "0.2.0",
   "name": "麦麦见闻",
-  "description": "后台采集、整理见闻与定向分享",
+  "description": "订阅资讯与群聊话题，支持主动分享与聊天总结",
   "author": {
     "name": "zeyr",
     "url": "https://github.com/zeyr"
